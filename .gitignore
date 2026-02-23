@@ -1,0 +1,15 @@
+﻿__pycache__/
+*.py[cod]
+.venv/
+outputs/models/
+outputs/figures/
+outputs/tables/
+reports/
+data/
+Data_mining_project (1).pdf
+data_mining_project.txt
+PROJECT_DECISIONS_LOG.md
+README.md
+requirements.txt
+app/
+report.md

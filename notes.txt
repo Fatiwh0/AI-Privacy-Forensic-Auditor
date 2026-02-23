@@ -1,0 +1,99 @@
+﻿
+current status
+- dataset used: adult census (data/raw/adult.csv)
+- stages working: ingestion, preprocessing, eda, reliability, mia_shadow
+- stages not implemented yet: association_rules, clustering, classification, defense_dp
+- latest run summary file: outputs/reports/pipeline_summary.json
+
+pipeline order (run_pipeline.py)
+- ingestion
+- preprocessing
+- eda
+- reliability
+- association_rules
+- clustering
+- classification
+- mia_shadow
+- defense_dp
+
+
+
+run_pipeline.py
+- purpose: runs pipeline steps and writes outputs/reports/pipeline_summary.json
+- left: no required changes, only update if adding/removing steps
+
+config/dataset_adult.yaml
+- purpose: schema, split, cleaning, reliability config, mia config
+- left: tune parameters if needed for experiments
+
+config/experiments.yaml
+- purpose: output folder configuration
+- left: minimal
+
+scripts/download_adult.py
+- purpose: download dataset and save data/raw/adult.csv
+- left: none for current scope
+
+src/ingestion.py
+- purpose: load raw csv into pipeline context
+- left: optional extra validations
+
+src/preprocessing.py
+- purpose: clean data, normalize target, stratified split, save processed files, preprocessing summary
+- left: optional extra diagnostics/imputation strategy tests
+
+src/eda.py
+- purpose: generate univariate/bivariate/multivariate tables and plots
+- left: optional extra plots/interpretation
+
+src/reliability.py
+- purpose: repeated runs, metrics distribution, confidence intervals, calibration outputs
+- left: optional baseline comparison with another model
+
+src/mia_shadow.py
+- purpose: target model + shadow models + attack model to measure membership leakage
+- left: connect with defense module for before/after comparison
+
+src/association_rules.py
+- purpose: association rules stage
+- left: implement apriori, save rules outputs, add interpretation
+
+src/clustering.py
+- purpose: clustering stage
+- left: implement kmeans/dbscan, save metrics/plots, add interpretation
+
+src/classification.py
+- purpose: extra supervised modeling stage
+- left: implement 
+
+src/defense_dp.py
+- purpose: defense stage
+- left: implement defense method, compare utility and attack auc, create privacy-utility curve
+
+src/utils.py
+- purpose: helper functions for yaml/json and output dirs
+- left: none
+
+app/streamlit_app.py
+- purpose: dashboard entry point (currently basic scaffold)
+- left: add pages/panels for eda, reliability, mia, defense outputs
+
+
+
+existing outputs now
+- outputs/tables/preprocessing_summary.csv
+- outputs/tables/eda_*.csv
+- outputs/figures/eda_*.png
+- outputs/tables/reliability_*.csv
+- outputs/figures/reliability_*.png
+- outputs/tables/mia_*.csv
+- outputs/figures/mia_*.png
+- outputs/reports/pipeline_summary.json
+
+next tasks (order)
+1/ implement src/defense_dp.py
+2/ implement src/association_rules.py
+3/ implement src/clustering.py
+4/ decide if src/classification.py must be implemented
+5/ expand app/streamlit_app.py for demo
+6/ final report + ppt 

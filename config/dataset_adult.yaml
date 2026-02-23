@@ -1,0 +1,87 @@
+dataset:
+  name: adult_census_income
+  version: 1
+  source: UCI Adult / Census Income
+  local_path: data/raw/adult.csv
+  separator: ","
+  has_header: true
+
+schema:
+  target: income
+  id_column: null
+  numeric_features:
+    - age
+    - fnlwgt
+    - education_num
+    - capital_gain
+    - capital_loss
+    - hours_per_week
+  categorical_features:
+    - workclass
+    - education
+    - marital_status
+    - occupation
+    - relationship
+    - race
+    - sex
+    - native_country
+  sensitive_features:
+    - sex
+    - race
+    - native_country
+
+cleaning:
+  missing_tokens:
+    - "?"
+    - ""
+  drop_duplicates: true
+  outlier_strategy: iqr_clip
+
+split:
+  train_size: 0.6
+  val_size: 0.2
+  test_size: 0.2
+  random_state: 42
+  stratify: true
+
+association_rules:
+  min_support: 0.05
+  min_confidence: 0.6
+  min_lift: 1.1
+
+clustering:
+  kmeans_k: 3
+  dbscan_eps: 0.8
+  dbscan_min_samples: 15
+
+classification:
+  baseline_models:
+    - logistic_regression
+    - random_forest
+  optimize_for: f1
+
+reliability:
+  n_runs: 10
+  test_size: 0.2
+  random_state: 42
+  calibration_bins: 10
+
+mia:
+  target_model: random_forest
+  shadow_models: 5
+  world_split: 0.5
+  member_fraction: 0.5
+  attack_models:
+    - random_forest
+  probability_features:
+    - max_confidence
+    - entropy
+    - top2_gap
+    - true_class_confidence
+
+defense:
+  epsilon_values:
+    - 0.5
+    - 1.0
+    - 2.0
+    - 4.0
