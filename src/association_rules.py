@@ -37,10 +37,37 @@ def _discretize_numeric(df: pd.DataFrame, numeric_cols: Iterable[str]) -> pd.Dat
         non_null = series.dropna()
         if non_null.empty:
             continue
-        q1, q2 = non_null.quantile([0.33, 0.66]).tolist()
-        bins = [-float("inf"), q1, q2, float("inf")]
-        labels = ["low", "mid", "high"]
-        bucketed = pd.cut(series, bins=bins, labels=labels, include_lowest=True)
+
+        # Quantile edges can be duplicated on sparse/heavily-zeroed columns
+        # (e.g., capital_gain/capital_loss), which makes pd.cut fail with
+        # "Bin edges must be unique". Build bins dynamically from unique edges.
+        q_edges = non_null.quantile([0.0, 0.33, 0.66, 1.0]).tolist()
+        unique_edges: list[float] = []
+        for edge in q_edges:
+            edge_f = float(edge)
+            if not unique_edges or edge_f > unique_edges[-1]:
+                unique_edges.append(edge_f)
+
+        if len(unique_edges) <= 1:
+            result[col] = pd.Series(["mid"] * len(series), index=series.index, dtype="string")
+            result[col] = result[col].where(series.notna(), other="MISSING")
+            continue
+
+        label_count = len(unique_edges) - 1
+        if label_count == 1:
+            labels = ["mid"]
+        elif label_count == 2:
+            labels = ["low", "high"]
+        else:
+            labels = ["low", "mid", "high"][:label_count]
+
+        bucketed = pd.cut(
+            series,
+            bins=unique_edges,
+            labels=labels,
+            include_lowest=True,
+            duplicates="drop",
+        )
         result[col] = bucketed.astype("string").fillna("MISSING")
     return result
 
