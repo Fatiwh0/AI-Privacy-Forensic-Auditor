@@ -32,17 +32,22 @@ MODEL_REGISTRY = {
 }
 
 
-def _load_clean_df(context: Dict[str, Any]) -> pd.DataFrame | None:
-    if "clean_df" in context:
-        return context["clean_df"].copy()
+def _load_splits(context: Dict[str, Any]) -> tuple[pd.DataFrame | None, pd.DataFrame | None]:
+    train_df = context.get("train_df")
+    test_df = context.get("test_df")
+    if isinstance(train_df, pd.DataFrame) and isinstance(test_df, pd.DataFrame) and not train_df.empty and not test_df.empty:
+        return train_df.copy(), test_df.copy()
 
-    parts: List[pd.DataFrame] = []
-    for split in ("train", "val", "test"):
-        path = Path(f"data/processed/{split}.csv")
-        if not path.exists():
-            return None
-        parts.append(pd.read_csv(path))
-    return pd.concat(parts, axis=0, ignore_index=True)
+    train_path = Path("data/processed/train.csv")
+    test_path = Path("data/processed/test.csv")
+    if train_path.exists() and test_path.exists():
+        return pd.read_csv(train_path), pd.read_csv(test_path)
+
+    clean_df = context.get("clean_df")
+    if isinstance(clean_df, pd.DataFrame) and not clean_df.empty:
+        return clean_df.copy(), None
+
+    return None, None
 
 
 def _ensure_output_dirs() -> Dict[str, Path]:
@@ -90,8 +95,8 @@ def run(config: Dict[str, Any], context: Dict[str, Any]) -> Dict[str, Any]:
             ),
         }
 
-    df = _load_clean_df(context)
-    if df is None:
+    train_df, test_df = _load_splits(context)
+    if train_df is None:
         return {
             "step": "classification",
             "status": "skipped",
@@ -102,15 +107,15 @@ def run(config: Dict[str, Any], context: Dict[str, Any]) -> Dict[str, Any]:
     cls_cfg = config.get("classification", {})
 
     target_col = schema_cfg.get("target", "income")
-    if target_col not in df.columns:
+    if target_col not in train_df.columns:
         return {
             "step": "classification",
             "status": "error",
             "message": f"Target column '{target_col}' not found.",
         }
 
-    numeric_cols = [c for c in schema_cfg.get("numeric_features", []) if c in df.columns]
-    categorical_cols = [c for c in schema_cfg.get("categorical_features", []) if c in df.columns]
+    numeric_cols = [c for c in schema_cfg.get("numeric_features", []) if c in train_df.columns]
+    categorical_cols = [c for c in schema_cfg.get("categorical_features", []) if c in train_df.columns]
     feature_cols = numeric_cols + categorical_cols
     if not feature_cols:
         return {
@@ -119,7 +124,9 @@ def run(config: Dict[str, Any], context: Dict[str, Any]) -> Dict[str, Any]:
             "message": "No configured feature columns available for classification.",
         }
 
-    configured_models = [m for m in cls_cfg.get("baseline_models", ["logistic_regression", "random_forest"]) if m in MODEL_REGISTRY]
+    configured_models = [
+        m for m in cls_cfg.get("baseline_models", ["logistic_regression", "random_forest"]) if m in MODEL_REGISTRY
+    ]
     if not configured_models:
         return {
             "step": "classification",
@@ -127,17 +134,23 @@ def run(config: Dict[str, Any], context: Dict[str, Any]) -> Dict[str, Any]:
             "message": "No supported baseline models configured.",
         }
 
-    work_df = df[feature_cols + [target_col]].dropna(subset=[target_col]).reset_index(drop=True)
-    X = work_df[feature_cols]
-    y = _target_to_binary(work_df[target_col])
-
-    X_train, X_test, y_train, y_test = train_test_split(
-        X,
-        y,
-        test_size=0.2,
-        random_state=int(config.get("split", {}).get("random_state", 42)),
-        stratify=y,
-    )
+    if test_df is None or test_df.empty:
+        X = train_df[feature_cols]
+        y = _target_to_binary(train_df[target_col])
+        X_train, X_test, y_train, y_test = train_test_split(
+            X,
+            y,
+            test_size=0.2,
+            random_state=int(config.get("split", {}).get("random_state", 42)),
+            stratify=y,
+        )
+    else:
+        test_df = test_df.copy()
+        test_df = test_df[test_df[target_col].notna()]
+        X_train = train_df[feature_cols]
+        y_train = _target_to_binary(train_df[target_col])
+        X_test = test_df[feature_cols]
+        y_test = _target_to_binary(test_df[target_col])
 
     rows: list[Dict[str, Any]] = []
     for model_name in configured_models:
@@ -162,7 +175,9 @@ def run(config: Dict[str, Any], context: Dict[str, Any]) -> Dict[str, Any]:
             }
         )
 
-    metrics_df = pd.DataFrame(rows).sort_values("f1", ascending=False).reset_index(drop=True)
+    optimize_for = str(cls_cfg.get("optimize_for", "f1")).lower()
+    sort_metric = optimize_for if optimize_for in {"accuracy", "precision", "recall", "f1", "roc_auc"} else "f1"
+    metrics_df = pd.DataFrame(rows).sort_values(sort_metric, ascending=False).reset_index(drop=True)
     best_model = metrics_df.iloc[0]["model"] if not metrics_df.empty else None
 
     dirs = _ensure_output_dirs()
@@ -172,7 +187,8 @@ def run(config: Dict[str, Any], context: Dict[str, Any]) -> Dict[str, Any]:
     return {
         "step": "classification",
         "status": "ok",
-        "message": f"Classification baselines completed. Best model by f1: {best_model}.",
+        "message": f"Classification baselines completed. Best model by {sort_metric}: {best_model}.",
         "metrics_path": str(metrics_path),
         "best_model": best_model,
+        "optimized_metric": sort_metric,
     }

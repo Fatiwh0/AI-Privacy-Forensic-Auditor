@@ -1,10 +1,12 @@
 from __future__ import annotations
 
-from itertools import combinations
+from collections import Counter
 from pathlib import Path
-from typing import Any, Dict, Iterable, List
+from typing import Any, Dict, Iterable, List, Set, Tuple
 
 import pandas as pd
+
+Itemset = frozenset[str]
 
 
 def _load_clean_df(context: Dict[str, Any]) -> pd.DataFrame | None:
@@ -48,8 +50,8 @@ def _prepare_transactions(
     categorical_cols: Iterable[str],
     numeric_cols: Iterable[str],
     max_categories_per_col: int = 12,
-) -> pd.DataFrame:
-    transactions = pd.DataFrame(index=df.index)
+) -> List[Set[str]]:
+    tx_df = pd.DataFrame(index=df.index)
 
     for col in categorical_cols:
         if col not in df.columns:
@@ -57,52 +59,81 @@ def _prepare_transactions(
         values = df[col].astype("string").fillna("MISSING")
         top_values = values.value_counts().head(max_categories_per_col).index
         values = values.where(values.isin(top_values), other="OTHER")
-        transactions[col] = values
+        tx_df[col] = values
 
     binned_numeric = _discretize_numeric(df, numeric_cols)
     for col in binned_numeric.columns:
-        transactions[col] = binned_numeric[col]
+        tx_df[col] = binned_numeric[col]
 
-    if transactions.empty:
-        return transactions
+    if tx_df.empty:
+        return []
 
-    for col in transactions.columns:
-        transactions[col] = transactions[col].astype(str).map(lambda v: f"{col}={v}")
+    for col in tx_df.columns:
+        tx_df[col] = tx_df[col].astype(str).map(lambda v: f"{col}={v}")
 
-    return transactions
+    return [set(row.dropna().tolist()) for _, row in tx_df.iterrows()]
 
 
-def _itemset_support(transactions: pd.DataFrame, items: tuple[str, ...]) -> float:
-    if transactions.empty:
-        return 0.0
-    mask = pd.Series(True, index=transactions.index)
-    for item in items:
-        mask &= (transactions == item).any(axis=1)
-    return float(mask.mean())
+def _support_count(transactions: List[Set[str]], itemset: Itemset) -> int:
+    return sum(1 for tx in transactions if itemset.issubset(tx))
+
+
+def _generate_candidates(prev_level: List[Itemset], k: int) -> List[Itemset]:
+    prev_sorted = sorted(prev_level, key=lambda s: tuple(sorted(s)))
+    prev_set = set(prev_level)
+    candidates: set[Itemset] = set()
+
+    for i in range(len(prev_sorted)):
+        for j in range(i + 1, len(prev_sorted)):
+            union = prev_sorted[i] | prev_sorted[j]
+            if len(union) != k:
+                continue
+            # Apriori pruning: all (k-1)-subsets must be frequent
+            if all(frozenset(union - {item}) in prev_set for item in union):
+                candidates.add(union)
+
+    return sorted(candidates, key=lambda s: tuple(sorted(s)))
 
 
 def _mine_frequent_itemsets(
-    transactions: pd.DataFrame,
+    transactions: List[Set[str]],
     min_support: float,
     max_len: int = 3,
-) -> Dict[tuple[str, ...], float]:
-    if transactions.empty:
+) -> Dict[Itemset, float]:
+    n_tx = len(transactions)
+    if n_tx == 0:
         return {}
 
-    unique_items = sorted(pd.unique(transactions.to_numpy().ravel()))
-    unique_items = [item for item in unique_items if isinstance(item, str) and item]
+    min_count = max(1, int(min_support * n_tx))
+    all_supports: Dict[Itemset, float] = {}
 
-    supports: Dict[tuple[str, ...], float] = {}
-    for k in range(1, max_len + 1):
-        for combo in combinations(unique_items, k):
-            support = _itemset_support(transactions, combo)
-            if support >= min_support:
-                supports[combo] = support
-    return supports
+    item_counter: Counter[str] = Counter()
+    for tx in transactions:
+        item_counter.update(tx)
+
+    current_level = [frozenset([item]) for item, count in item_counter.items() if count >= min_count]
+    for itemset in current_level:
+        all_supports[itemset] = item_counter[next(iter(itemset))] / n_tx
+
+    k = 2
+    while current_level and k <= max_len:
+        candidates = _generate_candidates(current_level, k)
+        next_level: List[Itemset] = []
+
+        for candidate in candidates:
+            count = _support_count(transactions, candidate)
+            if count >= min_count:
+                next_level.append(candidate)
+                all_supports[candidate] = count / n_tx
+
+        current_level = next_level
+        k += 1
+
+    return all_supports
 
 
 def _generate_rules(
-    supports: Dict[tuple[str, ...], float],
+    supports: Dict[Itemset, float],
     min_confidence: float,
     min_lift: float,
 ) -> pd.DataFrame:
@@ -112,11 +143,16 @@ def _generate_rules(
         if len(itemset) < 2:
             continue
 
-        for r in range(1, len(itemset)):
-            for antecedent in combinations(itemset, r):
-                consequent = tuple(i for i in itemset if i not in antecedent)
-                ant_support = supports.get(tuple(sorted(antecedent)))
-                cons_support = supports.get(tuple(sorted(consequent)))
+        items = sorted(itemset)
+        for r in range(1, len(items)):
+            # simple subset generation for small k
+            from itertools import combinations
+
+            for antecedent_tuple in combinations(items, r):
+                antecedent = frozenset(antecedent_tuple)
+                consequent = itemset - antecedent
+                ant_support = supports.get(antecedent)
+                cons_support = supports.get(consequent)
                 if not ant_support or not cons_support:
                     continue
 
@@ -127,8 +163,8 @@ def _generate_rules(
 
                 rows.append(
                     {
-                        "antecedent": " & ".join(antecedent),
-                        "consequent": " & ".join(consequent),
+                        "antecedent": " & ".join(sorted(antecedent)),
+                        "consequent": " & ".join(sorted(consequent)),
                         "support": support_itemset,
                         "confidence": confidence,
                         "lift": lift,
@@ -150,9 +186,9 @@ def _generate_rules(
             ]
         )
 
-    rules_df = pd.DataFrame(rows)
-    rules_df = rules_df.sort_values(["lift", "confidence", "support"], ascending=False).reset_index(drop=True)
-    return rules_df
+    return pd.DataFrame(rows).drop_duplicates().sort_values(
+        ["lift", "confidence", "support"], ascending=False
+    ).reset_index(drop=True)
 
 
 def run(config: Dict[str, Any], context: Dict[str, Any]) -> Dict[str, Any]:
@@ -179,20 +215,20 @@ def run(config: Dict[str, Any], context: Dict[str, Any]) -> Dict[str, Any]:
     min_support = float(assoc_cfg.get("min_support", 0.05))
     min_confidence = float(assoc_cfg.get("min_confidence", 0.6))
     min_lift = float(assoc_cfg.get("min_lift", 1.1))
+    max_len = int(assoc_cfg.get("max_itemset_len", 3))
 
     transactions = _prepare_transactions(
         df=df,
         categorical_cols=categorical_cols,
         numeric_cols=numeric_cols,
     )
-    supports = _mine_frequent_itemsets(transactions, min_support=min_support, max_len=3)
+    supports = _mine_frequent_itemsets(transactions, min_support=min_support, max_len=max_len)
     rules_df = _generate_rules(supports, min_confidence=min_confidence, min_lift=min_lift)
 
     dirs = _ensure_output_dirs()
     rules_path = dirs["tables"] / "association_rules.csv"
-    rules_df.to_csv(rules_path, index=False)
-
     top_rules_path = dirs["tables"] / "association_rules_top10.csv"
+    rules_df.to_csv(rules_path, index=False)
     rules_df.head(10).to_csv(top_rules_path, index=False)
 
     return {
@@ -202,4 +238,5 @@ def run(config: Dict[str, Any], context: Dict[str, Any]) -> Dict[str, Any]:
         "rules_path": str(rules_path),
         "top_rules_path": str(top_rules_path),
         "n_rules": int(len(rules_df)),
+        "n_transactions": len(transactions),
     }
